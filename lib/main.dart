@@ -1,19 +1,18 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
 void main() {
-  runApp(const AuditorDadosApp());
+  runApp(const AuditorComercialApp());
 }
 
-class AuditorDadosApp extends StatelessWidget {
-  const AuditorDadosApp({super.key});
+class AuditorComercialApp extends StatelessWidget {
+  const AuditorComercialApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Auditor de Dados Abertos',
+      title: 'Auditor de Risco Comercial',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
@@ -28,33 +27,99 @@ class AuditorDadosApp extends StatelessWidget {
           ),
         ),
       ),
-      home: const TelaPrincipal(),
+      home: const TelaAuditoriaComercial(),
     );
   }
 }
 
-class TelaPrincipal extends StatefulWidget {
-  const TelaPrincipal({super.key});
+class TelaAuditoriaComercial extends StatefulWidget {
+  const TelaAuditoriaComercial({super.key});
 
   @override
-  State<TelaPrincipal> createState() => _TelaPrincipalState();
+  State<TelaAuditoriaComercial> createState() => _TelaAuditoriaComercialState();
 }
 
-class _TelaPrincipalState extends State<TelaPrincipal> {
+class _TelaAuditoriaComercialState extends State<TelaAuditoriaComercial> {
   final TextEditingController _cnpjController = TextEditingController(
-    text: '00.000.000/0001-91',
+    text: '00.000.000/0001-91', // Banco do Brasil (Exemplo)
   );
 
   bool _carregando = false;
   Map<String, dynamic>? _dados;
   String _mensagemErro = '';
-  
-  // Métricas Técnicas
-  double _latenciaMs = 0.0;
-  int _tamanhoBytes = 0;
-  int _statusCode = 0;
 
-  Future<void> _realizarConsulta() async {
+  // Variáveis de Análise de Risco
+  String _parecerComercial = '';
+  Color _corParecer = Colors.green;
+  IconData _iconeParecer = Icons.check_circle_rounded;
+  int _scoreRisco = 0;
+  List<String> _criteriosAvaliados = [];
+
+  void _analisarRiscoComercial(Map<String, dynamic> dados) {
+    int pontuacao = 100;
+    List<String> criterios = [];
+
+    final situacao = (dados['descricao_situacao_cadastral'] ?? '').toString().toUpperCase();
+    final dataAberturaStr = dados['data_inicio_atividade'] ?? '';
+    final capitalSocial = double.tryParse(dados['capital_social']?.toString() ?? '0') ?? 0;
+
+    // 1. Checagem da Situação Cadastral na Receita
+    if (situacao == 'ATIVA') {
+      criterios.add('✓ CNPJ Regular e Ativo na Receita Federal');
+    } else {
+      pontuacao -= 70;
+      criterios.add('✗ CNPJ $situacao (Risco Crítico)');
+    }
+
+    // 2. Tempo de Fundação / Maturidade da Empresa
+    if (dataAberturaStr.isNotEmpty) {
+      try {
+        final dataAbertura = DateTime.parse(dataAberturaStr);
+        final diferencaDias = DateTime.now().difference(dataAbertura).inDays;
+        final anosEmpresa = (diferencaDias / 365).floor();
+
+        if (anosEmpresa >= 2) {
+          criterios.add('✓ Empresa madura ($anosEmpresa anos de mercado)');
+        } else if (anosEmpresa >= 1) {
+          pontuacao -= 10;
+          criterios.add('⚠ Empresa com cerca de 1 ano de atividade');
+        } else {
+          pontuacao -= 25;
+          criterios.add('⚠ Empresa recente (menos de 1 ano de abertura)');
+        }
+      } catch (_) {
+        criterios.add('• Tempo de mercado não identificado');
+      }
+    }
+
+    // 3. Estrutura de Capital
+    if (capitalSocial > 0) {
+      criterios.add('✓ Capital social declarado e registrado');
+    } else {
+      pontuacao -= 10;
+      criterios.add('⚠ Capital social zerado ou não informado');
+    }
+
+    // Classificação Final
+    if (pontuacao >= 75) {
+      _parecerComercial = 'APROVADO / RECOMENDADO';
+      _corParecer = const Color(0xFF2B8A3E); // Verde escuro
+      _iconeParecer = Icons.verified_user_rounded;
+    } else if (pontuacao >= 50) {
+      _parecerComercial = 'ATENÇÃO / RISCO MODERADO';
+      _corParecer = const Color(0xFFE67700); // Laranja
+      _iconeParecer = Icons.warning_amber_rounded;
+    } else {
+      _parecerComercial = 'NÃO RECOMENDADO / NEGADO';
+      _corParecer = const Color(0xFFC92A2A); // Vermelho
+      _iconeParecer = Icons.cancel_rounded;
+    }
+
+    _scoreRisco = pontuacao.clamp(0, 100);
+    _criteriosAvaliados = criterios;
+  }
+
+  Future<void> _realizarAuditoria() async {
     final cnpjLimpo = _cnpjController.text.replaceAll(RegExp(r'\D'), '');
 
     if (cnpjLimpo.length != 14) {
@@ -65,7 +130,6 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
       return;
     }
 
-    // Fecha o teclado
     FocusScope.of(context).unfocus();
 
     setState(() {
@@ -74,40 +138,28 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
       _dados = null;
     });
 
-    final cronometro = Stopwatch()..start();
-
     try {
       final url = Uri.parse('https://brasilapi.com.br/api/cnpj/v1/$cnpjLimpo');
       final resposta = await http.get(url).timeout(const Duration(seconds: 12));
 
-      cronometro.stop();
-
-      setState(() {
-        _statusCode = resposta.statusCode;
-        _latenciaMs = cronometro.elapsedMicroseconds / 1000.0;
-        _tamanhoBytes = resposta.bodyBytes.length;
-      });
-
       if (resposta.statusCode == 200) {
-        final Map<String, dynamic> corpoDecodificado = json.decode(
-          utf8.decode(resposta.bodyBytes),
-        );
+        final Map<String, dynamic> corpo = json.decode(utf8.decode(resposta.bodyBytes));
         setState(() {
-          _dados = corpoDecodificado;
+          _dados = corpo;
+          _analisarRiscoComercial(corpo);
         });
       } else if (resposta.statusCode == 404) {
         setState(() {
-          _mensagemErro = 'CNPJ não encontrado na base de dados da Receita Federal.';
+          _mensagemErro = 'CNPJ não encontrado nas bases oficiais do Governo.';
         });
       } else {
         setState(() {
-          _mensagemErro = 'Serviço indisponível no momento (Código HTTP: ${resposta.statusCode}).';
+          _mensagemErro = 'Erro ao consultar a base oficial (${resposta.statusCode}).';
         });
       }
     } catch (e) {
-      cronometro.stop();
       setState(() {
-        _mensagemErro = 'Falha de comunicação. Verifique sua conexão com a internet.';
+        _mensagemErro = 'Erro de conexão. Verifique o acesso à internet.';
       });
     } finally {
       setState(() {
@@ -122,19 +174,19 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
       appBar: AppBar(
         centerTitle: true,
         title: const Text(
-          'Auditor de Dados Públicos',
-          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
+          'Auditor de Risco Comercial',
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
         ),
         backgroundColor: Colors.white,
         elevation: 0.5,
       ),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 20.0),
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 18.0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Card de Entrada / Pesquisa
+              // Card de Busca
               Card(
                 color: Colors.white,
                 child: Padding(
@@ -142,22 +194,16 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Row(
-                        children: [
-                          Icon(Icons.manage_search_rounded, color: Color(0xFF0D6EFD)),
-                          SizedBox(width: 8),
-                          Text(
-                            'Consultar Base Oficial',
-                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
                       const Text(
-                        'Insira o CNPJ da instituição para auditar os registros cadastrais públicos em tempo real.',
-                        style: TextStyle(color: Colors.black54, fontSize: 13),
+                        'Auditoria de Compliance & Crédito',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Consulte a saúde cadastral da empresa antes de fechar negócios, parcerias ou vendas a prazo.',
+                        style: TextStyle(color: Colors.black54, fontSize: 12),
+                      ),
+                      const SizedBox(height: 14),
                       TextField(
                         controller: _cnpjController,
                         keyboardType: TextInputType.number,
@@ -166,7 +212,7 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
                           labelText: 'Número do CNPJ',
                           filled: true,
                           fillColor: const Color(0xFFF1F3F5),
-                          prefixIcon: const Icon(Icons.corporate_fare_rounded),
+                          prefixIcon: const Icon(Icons.business_rounded),
                           suffixIcon: _cnpjController.text.isNotEmpty
                               ? IconButton(
                                   icon: const Icon(Icons.clear, size: 20),
@@ -177,27 +223,23 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
                             borderRadius: BorderRadius.circular(12),
                             borderSide: BorderSide.none,
                           ),
-                          contentPadding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
                         ),
                       ),
-                      const SizedBox(height: 14),
+                      const SizedBox(height: 12),
                       SizedBox(
                         width: double.infinity,
                         height: 48,
                         child: FilledButton.icon(
-                          onPressed: _carregando ? null : _realizarConsulta,
+                          onPressed: _carregando ? null : _realizarAuditoria,
                           icon: _carregando
                               ? const SizedBox(
                                   width: 20,
                                   height: 20,
-                                  child: CircularProgressIndicator(
-                                    color: Colors.white,
-                                    strokeWidth: 2.5,
-                                  ),
+                                  child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
                                 )
-                              : const Icon(Icons.search_rounded),
+                              : const Icon(Icons.shield_outlined),
                           label: Text(
-                            _carregando ? 'Buscando Dados...' : 'Executar Consulta',
+                            _carregando ? 'Auditando...' : 'Avaliar Risco Comercial',
                             style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
                           ),
                           style: FilledButton.styleFrom(
@@ -213,11 +255,11 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
                 ),
               ),
 
-              // Alerta de Erro
+              // Mensagem de Erro
               if (_mensagemErro.isNotEmpty) ...[
                 const SizedBox(height: 16),
                 Container(
-                  padding: const EdgeInsets.all(14),
+                  padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
                     color: const Color(0xFFFFF5F5),
                     borderRadius: BorderRadius.circular(12),
@@ -226,7 +268,7 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
                   child: Row(
                     children: [
                       const Icon(Icons.error_outline, color: Color(0xFFE03131)),
-                      const SizedBox(width: 10),
+                      const SizedBox(width: 8),
                       Expanded(
                         child: Text(
                           _mensagemErro,
@@ -238,53 +280,53 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
                 ),
               ],
 
-              // Bloco de Métricas Técnicas (TCC)
+              // RESULTADO DA ANÁLISE COMERCIAL
               if (_dados != null) ...[
-                const SizedBox(height: 24),
-                const Text(
-                  'Métricas de Desempenho (Avaliação TCC)',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _construirCardMetrica(
-                        titulo: 'Latência',
-                        valor: '${_latenciaMs.toStringAsFixed(1)} ms',
-                        icone: Icons.timer_outlined,
-                        cor: Colors.orange,
+                const SizedBox(height: 20),
+
+                // Card Parecer Geral (Aprovado / Negado)
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: _corParecer.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: _corParecer.withOpacity(0.4), width: 1.5),
+                  ),
+                  child: Column(
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(_iconeParecer, color: _corParecer, size: 28),
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Text(
+                              _parecerComercial,
+                              style: TextStyle(
+                                color: _corParecer,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _construirCardMetrica(
-                        titulo: 'Status HTTP',
-                        valor: '$_statusCode OK',
-                        icone: Icons.check_circle_outline,
-                        cor: Colors.green,
+                      const SizedBox(height: 8),
+                      Text(
+                        'Score de Conformidade: $_scoreRisco / 100',
+                        style: TextStyle(
+                          color: _corParecer,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _construirCardMetrica(
-                        titulo: 'Payload',
-                        valor: '${(_tamanhoBytes / 1024).toStringAsFixed(1)} KB',
-                        icone: Icons.data_usage_rounded,
-                        cor: const Color(0xFF0D6EFD),
-                      ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
 
-                const SizedBox(height: 24),
-                const Text(
-                  'Dados Cadastrais Públicos',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 16),
 
-                // Card Principal dos Dados
+                // Critérios e Checklist Legal
                 Card(
                   color: Colors.white,
                   child: Padding(
@@ -292,36 +334,54 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _construirItemDado(
-                          label: 'Razão Social',
-                          valor: _dados!['razao_social'] ?? 'Não informado',
-                          destaque: true,
+                        const Text(
+                          'CRITÉRIOS DE AVALIAÇÃO LEGAL',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black54,
+                            letterSpacing: 0.5,
+                          ),
                         ),
-                        const Divider(height: 20, color: Color(0xFFF1F3F5)),
-                        _construirItemDado(
-                          label: 'Nome Fantasia',
-                          valor: (_dados!['nome_fantasia'] != null && _dados!['nome_fantasia'].toString().trim().isNotEmpty)
-                              ? _dados!['nome_fantasia']
-                              : 'Sem nome fantasia registrado',
+                        const SizedBox(height: 10),
+                        ..._criteriosAvaliados.map(
+                          (criterio) => Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4.0),
+                            child: Text(
+                              criterio,
+                              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                            ),
+                          ),
                         ),
-                        const Divider(height: 20, color: Color(0xFFF1F3F5)),
-                        _construirItemDado(
-                          label: 'Situação Cadastral',
-                          valor: _dados!['descricao_situacao_cadastral'] ?? 'Ativa',
-                          badgeCor: _dados!['descricao_situacao_cadastral'] == 'ATIVA'
-                              ? Colors.green
-                              : Colors.red,
+                      ],
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                // Dados Cadastrais Oficiais
+                Card(
+                  color: Colors.white,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'REGISTRO OFICIAL NA RECEITA',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black54,
+                            letterSpacing: 0.5,
+                          ),
                         ),
-                        const Divider(height: 20, color: Color(0xFFF1F3F5)),
-                        _construirItemDado(
-                          label: 'Atividade Econômica (CNAE)',
-                          valor: _dados!['cnae_fiscal_descricao'] ?? 'Não informado',
-                        ),
-                        const Divider(height: 20, color: Color(0xFFF1F3F5)),
-                        _construirItemDado(
-                          label: 'Localização',
-                          valor: '${_dados!['logradouro'] ?? ''}, ${_dados!['numero'] ?? 'S/N'} - ${_dados!['bairro'] ?? ''}\n${_dados!['municipio'] ?? ''} / ${_dados!['uf'] ?? ''} - CEP: ${_dados!['cep'] ?? ''}',
-                        ),
+                        const Divider(height: 16, color: Color(0xFFF1F3F5)),
+                        _itemInfo('Razão Social', _dados!['razao_social'] ?? 'Não informado'),
+                        _itemInfo('Nome Fantasia', _dados!['nome_fantasia'] ?? 'Não registrado'),
+                        _itemInfo('Atividade (CNAE)', _dados!['cnae_fiscal_descricao'] ?? 'Não informado'),
+                        _itemInfo('Endereço', '${_dados!['logradouro'] ?? ''}, ${_dados!['numero'] ?? 'S/N'} - ${_dados!['municipio'] ?? ''}/${_dados!['uf'] ?? ''}'),
                       ],
                     ),
                   ),
@@ -334,86 +394,23 @@ class _TelaPrincipalState extends State<TelaPrincipal> {
     );
   }
 
-  Widget _construirCardMetrica({
-    required String titulo,
-    required String valor,
-    required IconData icone,
-    required Color cor,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFE9ECEF)),
-      ),
+  Widget _itemInfo(String rotulo, String valor) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icone, color: cor, size: 22),
+          Text(
+            rotulo,
+            style: const TextStyle(fontSize: 11, color: Colors.black45, fontWeight: FontWeight.bold),
+          ),
+          SelectableText(
+            valor.trim().isEmpty ? 'Não informado' : valor,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+          ),
           const SizedBox(height: 6),
-          Text(
-            titulo,
-            style: const TextStyle(fontSize: 11, color: Colors.black54),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            valor,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.bold,
-              color: cor,
-            ),
-          ),
         ],
       ),
-    );
-  }
-
-  Widget _construirItemDado({
-    required String label,
-    required String valor,
-    bool destaque = false,
-    Color? badgeCor,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label.toUpperCase(),
-          style: const TextStyle(
-            fontSize: 10,
-            fontWeight: FontWeight.w700,
-            color: Colors.black45,
-            letterSpacing: 0.5,
-          ),
-        ),
-        const SizedBox(height: 4),
-        if (badgeCor != null)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: badgeCor.withOpacity(0.12),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Text(
-              valor,
-              style: TextStyle(
-                color: badgeCor,
-                fontWeight: FontWeight.bold,
-                fontSize: 13,
-              ),
-            ),
-          )
-        else
-          SelectableText(
-            valor,
-            style: TextStyle(
-              fontSize: destaque ? 15 : 13,
-              fontWeight: destaque ? FontWeight.bold : FontWeight.w500,
-              color: const Color(0xFF212529),
-            ),
-          ),
-      ],
     );
   }
 }
