@@ -1,90 +1,113 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
 void main() {
-  runApp(const ConsultaPublicaApp());
+  runApp(const AuditorDadosApp());
 }
 
-class ConsultaPublicaApp extends StatelessWidget {
-  const ConsultaPublicaApp({super.key});
+class AuditorDadosApp extends StatelessWidget {
+  const AuditorDadosApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Consulta Dados Públicos',
+      title: 'Auditor de Dados Abertos',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
         useMaterial3: true,
+        colorSchemeSeed: const Color(0xFF0D6EFD),
+        brightness: Brightness.light,
+        scaffoldBackgroundColor: const Color(0xFFF8F9FA),
+        cardTheme: const CardTheme(
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(16)),
+            side: BorderSide(color: Color(0xFFE9ECEF), width: 1),
+          ),
+        ),
       ),
-      home: const ConsultaScreen(),
+      home: const TelaPrincipal(),
     );
   }
 }
 
-class ConsultaScreen extends StatefulWidget {
-  const ConsultaScreen({super.key});
+class TelaPrincipal extends StatefulWidget {
+  const TelaPrincipal({super.key});
 
   @override
-  State<ConsultaScreen> createState() => _ConsultaScreenState();
+  State<TelaPrincipal> createState() => _TelaPrincipalState();
 }
 
-class _ConsultaScreenState extends State<ConsultaScreen> {
+class _TelaPrincipalState extends State<TelaPrincipal> {
   final TextEditingController _cnpjController = TextEditingController(
-    text: '00000000000191', // Exemplo: Banco do Brasil
+    text: '00.000.000/0001-91',
   );
 
   bool _carregando = false;
-  Map<String, dynamic>? _dadosRetornados;
-  String _erro = '';
+  Map<String, dynamic>? _dados;
+  String _mensagemErro = '';
+  
+  // Métricas Técnicas
   double _latenciaMs = 0.0;
-  int _tamanhoPayloadBytes = 0;
+  int _tamanhoBytes = 0;
+  int _statusCode = 0;
 
-  Future<void> _consultarApi() async {
+  Future<void> _realizarConsulta() async {
     final cnpjLimpo = _cnpjController.text.replaceAll(RegExp(r'\D'), '');
 
     if (cnpjLimpo.length != 14) {
       setState(() {
-        _erro = 'Por favor, insira um CNPJ válido com 14 dígitos.';
-        _dadosRetornados = null;
+        _mensagemErro = 'CNPJ inválido. Digite os 14 dígitos numéricos.';
+        _dados = null;
       });
       return;
     }
 
+    // Fecha o teclado
+    FocusScope.of(context).unfocus();
+
     setState(() {
       _carregando = true;
-      _erro = '';
-      _dadosRetornados = null;
+      _mensagemErro = '';
+      _dados = null;
     });
 
-    final stopwatch = Stopwatch()..start();
+    final cronometro = Stopwatch()..start();
 
     try {
       final url = Uri.parse('https://brasilapi.com.br/api/cnpj/v1/$cnpjLimpo');
-      final response = await http.get(url).timeout(const Duration(seconds: 10));
+      final resposta = await http.get(url).timeout(const Duration(seconds: 12));
 
-      stopwatch.stop();
+      cronometro.stop();
 
-      if (response.statusCode == 200) {
-        final decoded = json.decode(utf8.decode(response.bodyBytes));
+      setState(() {
+        _statusCode = resposta.statusCode;
+        _latenciaMs = cronometro.elapsedMicroseconds / 1000.0;
+        _tamanhoBytes = resposta.bodyBytes.length;
+      });
+
+      if (resposta.statusCode == 200) {
+        final Map<String, dynamic> corpoDecodificado = json.decode(
+          utf8.decode(resposta.bodyBytes),
+        );
         setState(() {
-          _dadosRetornados = decoded;
-          _latenciaMs = stopwatch.elapsedMicroseconds / 1000.0;
-          _tamanhoPayloadBytes = response.bodyBytes.length;
+          _dados = corpoDecodificado;
         });
-      } else if (response.statusCode == 404) {
+      } else if (resposta.statusCode == 404) {
         setState(() {
-          _erro = 'Registro não encontrado na base pública.';
+          _mensagemErro = 'CNPJ não encontrado na base de dados da Receita Federal.';
         });
       } else {
         setState(() {
-          _erro = 'Erro na requisição: Código HTTP ${response.statusCode}';
+          _mensagemErro = 'Serviço indisponível no momento (Código HTTP: ${resposta.statusCode}).';
         });
       }
     } catch (e) {
-      stopwatch.stop();
+      cronometro.stop();
       setState(() {
-        _erro = 'Falha na conexão: Verifique a internet.';
+        _mensagemErro = 'Falha de comunicação. Verifique sua conexão com a internet.';
       });
     } finally {
       setState(() {
@@ -97,164 +120,300 @@ class _ConsultaScreenState extends State<ConsultaScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Auditor de Dados Públicos & API'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        centerTitle: true,
+        title: const Text(
+          'Auditor de Dados Públicos',
+          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
+        ),
+        backgroundColor: Colors.white,
+        elevation: 0.5,
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text(
-              'Consulta de Base Pública (Dados Abertos):',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _cnpjController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                hintText: 'Digite o CNPJ (somente números)...',
-                prefixIcon: Icon(Icons.business),
-              ),
-            ),
-            const SizedBox(height: 12),
-            ElevatedButton.icon(
-              onPressed: _carregando ? null : _consultarApi,
-              icon: _carregando
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.search),
-              label: Text(_carregando ? 'Consultando...' : 'Consultar Base Oficial'),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-              ),
-            ),
-            const SizedBox(height: 20),
-
-            if (_erro.isNotEmpty)
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.red.shade50,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.red.shade200),
-                ),
-                child: Text(
-                  _erro,
-                  style: TextStyle(color: Colors.red.shade800),
-                ),
-              ),
-
-            if (_dadosRetornados != null) ...[
-              const Text(
-                'Métricas da Requisição (TCC):',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-              ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: _buildMetricCard(
-                      'Latência da API',
-                      '${_latenciaMs.toStringAsFixed(1)} ms',
-                      Colors.orange,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: _buildMetricCard(
-                      'Status HTTP',
-                      '200 OK',
-                      Colors.green,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: _buildMetricCard(
-                      'Payload',
-                      '$_tamanhoPayloadBytes B',
-                      Colors.blue,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
-              const Text(
-                'Dados Retornados (Base Pública):',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-              ),
-              const SizedBox(height: 8),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 20.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Card de Entrada / Pesquisa
               Card(
-                elevation: 2,
+                color: Colors.white,
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _buildInfoRow('Razão Social', _dadosRetornados!['razao_social'] ?? 'N/A'),
-                      _buildInfoRow('Nome Fantasia', _dadosRetornados!['nome_fantasia'] ?? 'N/A'),
-                      _buildInfoRow('CNPJ', _dadosRetornados!['cnpj'] ?? 'N/A'),
-                      _buildInfoRow('Situação Cadastral', _dadosRetornados!['descricao_situacao_cadastral'] ?? 'N/A'),
-                      _buildInfoRow('CNAE Principal', _dadosRetornados!['cnae_fiscal_descricao'] ?? 'N/A'),
-                      _buildInfoRow('Município / UF', '${_dadosRetornados!['municipio'] ?? ''} - ${_dadosRetornados!['uf'] ?? ''}'),
-                      _buildInfoRow('Logradouro', '${_dadosRetornados!['logradouro'] ?? ''}, ${_dadosRetornados!['numero'] ?? ''}'),
-                      _buildInfoRow('Bairro', _dadosRetornados!['bairro'] ?? 'N/A'),
+                      const Row(
+                        children: [
+                          Icon(Icons.manage_search_rounded, color: Color(0xFF0D6EFD)),
+                          SizedBox(width: 8),
+                          Text(
+                            'Consultar Base Oficial',
+                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Insira o CNPJ da instituição para auditar os registros cadastrais públicos em tempo real.',
+                        style: TextStyle(color: Colors.black54, fontSize: 13),
+                      ),
+                      const SizedBox(height: 16),
+                      TextField(
+                        controller: _cnpjController,
+                        keyboardType: TextInputType.number,
+                        decoration: InputDecoration(
+                          hintText: '00.000.000/0001-91',
+                          labelText: 'Número do CNPJ',
+                          filled: true,
+                          fillColor: const Color(0xFFF1F3F5),
+                          prefixIcon: const Icon(Icons.corporate_fare_rounded),
+                          suffixIcon: _cnpjController.text.isNotEmpty
+                              ? IconButton(
+                                  icon: const Icon(Icons.clear, size: 20),
+                                  onPressed: () => _cnpjController.clear(),
+                                )
+                              : null,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide.none,
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 48,
+                        child: FilledButton.icon(
+                          onPressed: _carregando ? null : _realizarConsulta,
+                          icon: _carregando
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2.5,
+                                  ),
+                                )
+                              : const Icon(Icons.search_rounded),
+                          label: Text(
+                            _carregando ? 'Buscando Dados...' : 'Executar Consulta',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                          ),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFF0D6EFD),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                 ),
               ),
+
+              // Alerta de Erro
+              if (_mensagemErro.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF5F5),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFFF8787)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.error_outline, color: Color(0xFFE03131)),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          _mensagemErro,
+                          style: const TextStyle(color: Color(0xFFC92A2A), fontSize: 13),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+
+              // Bloco de Métricas Técnicas (TCC)
+              if (_dados != null) ...[
+                const SizedBox(height: 24),
+                const Text(
+                  'Métricas de Desempenho (Avaliação TCC)',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _construirCardMetrica(
+                        titulo: 'Latência',
+                        valor: '${_latenciaMs.toStringAsFixed(1)} ms',
+                        icone: Icons.timer_outlined,
+                        cor: Colors.orange,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _construirCardMetrica(
+                        titulo: 'Status HTTP',
+                        valor: '$_statusCode OK',
+                        icone: Icons.check_circle_outline,
+                        cor: Colors.green,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _construirCardMetrica(
+                        titulo: 'Payload',
+                        valor: '${(_tamanhoBytes / 1024).toStringAsFixed(1)} KB',
+                        icone: Icons.data_usage_rounded,
+                        cor: const Color(0xFF0D6EFD),
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 24),
+                const Text(
+                  'Dados Cadastrais Públicos',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                ),
+                const SizedBox(height: 10),
+
+                // Card Principal dos Dados
+                Card(
+                  color: Colors.white,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _construirItemDado(
+                          label: 'Razão Social',
+                          valor: _dados!['razao_social'] ?? 'Não informado',
+                          destaque: true,
+                        ),
+                        const Divider(height: 20, color: Color(0xFFF1F3F5)),
+                        _construirItemDado(
+                          label: 'Nome Fantasia',
+                          valor: (_dados!['nome_fantasia'] != null && _dados!['nome_fantasia'].toString().trim().isNotEmpty)
+                              ? _dados!['nome_fantasia']
+                              : 'Sem nome fantasia registrado',
+                        ),
+                        const Divider(height: 20, color: Color(0xFFF1F3F5)),
+                        _construirItemDado(
+                          label: 'Situação Cadastral',
+                          valor: _dados!['descricao_situacao_cadastral'] ?? 'Ativa',
+                          badgeCor: _dados!['descricao_situacao_cadastral'] == 'ATIVA'
+                              ? Colors.green
+                              : Colors.red,
+                        ),
+                        const Divider(height: 20, color: Color(0xFFF1F3F5)),
+                        _construirItemDado(
+                          label: 'Atividade Econômica (CNAE)',
+                          valor: _dados!['cnae_fiscal_descricao'] ?? 'Não informado',
+                        ),
+                        const Divider(height: 20, color: Color(0xFFF1F3F5)),
+                        _construirItemDado(
+                          label: 'Localização',
+                          valor: '${_dados!['logradouro'] ?? ''}, ${_dados!['numero'] ?? 'S/N'} - ${_dados!['bairro'] ?? ''}\n${_dados!['municipio'] ?? ''} / ${_dados!['uf'] ?? ''} - CEP: ${_dados!['cep'] ?? ''}',
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildInfoRow(String label, String valor) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4.0),
-      child: RichText(
-        text: TextSpan(
-          style: const TextStyle(color: Colors.black87, fontSize: 14),
-          children: [
-            TextSpan(
-              text: '$label: ',
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            TextSpan(text: valor),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMetricCard(String title, String value, Color color) {
+  Widget _construirCardMetrica({
+    required String titulo,
+    required String valor,
+    required IconData icone,
+    required Color cor,
+  }) {
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withOpacity(0.3)),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE9ECEF)),
       ),
       child: Column(
         children: [
-          Text(title, style: TextStyle(fontSize: 11, color: color)),
-          const SizedBox(height: 4),
+          Icon(icone, color: cor, size: 22),
+          const SizedBox(height: 6),
           Text(
-            value,
+            titulo,
+            style: const TextStyle(fontSize: 11, color: Colors.black54),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            valor,
             style: TextStyle(
-              fontSize: 15,
+              fontSize: 13,
               fontWeight: FontWeight.bold,
-              color: color,
+              color: cor,
             ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _construirItemDado({
+    required String label,
+    required String valor,
+    bool destaque = false,
+    Color? badgeCor,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label.toUpperCase(),
+          style: const TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+            color: Colors.black45,
+            letterSpacing: 0.5,
+          ),
+        ),
+        const SizedBox(height: 4),
+        if (badgeCor != null)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: badgeCor.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              valor,
+              style: TextStyle(
+                color: badgeCor,
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+              ),
+            ),
+          )
+        else
+          SelectableText(
+            valor,
+            style: TextStyle(
+              fontSize: destaque ? 15 : 13,
+              fontWeight: destaque ? FontWeight.bold : FontWeight.w500,
+              color: const Color(0xFF212529),
+            ),
+          ),
+      ],
     );
   }
 }
